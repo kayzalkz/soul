@@ -46,7 +46,7 @@ def get_vps_url():
 # Storage Setup (Android)
 # ------------------------
 def get_download_dir():
-    # Saves directly to your Android's main Download folder so it shows up in file managers
+    # Saves directly to your Android's main Download folder
     base_dir = os.path.expanduser("~/storage/shared/Download/SoulKingdom")
     try:
         os.makedirs(base_dir, exist_ok=True)
@@ -100,7 +100,6 @@ def background_mega_download(url, title, ep_name, is_tv):
     try:
         print(Fore.YELLOW + f"\n[MEGATOOLS] 📥 Downloading to your phone: {category_folder}/{folder_name}" + Style.RESET_ALL)
         
-        # Run Megatools inside Termux
         process = subprocess.run(['megadl', '--path', temp_dir, url], capture_output=True, text=True)
         
         if process.returncode != 0:
@@ -205,7 +204,7 @@ def fetch_from_vps(vps_url, target_url, episodes):
         return None, None, [], False
 
 # ------------------------
-# HTML Generator
+# HTML Generator (Mobile Optimized with Web Stream)
 # ------------------------
 def generate_html(title, poster, links, filepath, is_tv):
     print(Fore.CYAN + f"💾 Generating Mobile UI..." + Style.RESET_ALL)
@@ -224,11 +223,13 @@ body {{ font-family: -apple-system, Roboto, Arial, sans-serif; background: #f4f6
 h3 {{ margin-top: 0; color: #0066cc; font-size: 16px; }}
 .btn-grid {{ display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }}
 .btn-grid a, .btn-grid button {{ display: block; text-align: center; padding: 12px; background: #e91e63; color: #fff; border-radius: 8px; text-decoration: none; border: none; font-size: 15px; font-weight: bold; width: 100%; box-sizing: border-box; }}
-.btn-vlc {{ background: #ff8800 !important; }}
+.btn-mega {{ background: #D9251A !important; }}
+.btn-stream {{ background: #4CAF50 !important; }}
 .btn-direct {{ background: #1E88E5 !important; }}
 
 .progress-container {{ display:none; background: #e3f2fd; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #1E88E5; }}
 .progress-text {{ font-size: 13px; color: #333; font-weight: bold; margin:0; word-break: break-all; }}
+video, iframe {{ width: 100%; max-width: 100%; border-radius: 8px; margin-top: 15px; border: none; }}
 </style>
 </head>
 <body>
@@ -247,13 +248,14 @@ h3 {{ margin-top: 0; color: #0066cc; font-size: 16px; }}
         safe_url = item["url"].replace(" ", "%20")
         ep_name_js = item['name'].replace("'", "\\'")
         
+        # Cleaned up mobile buttons: Download, Mega App, and Web Stream
         html_content += f"""
         <div class="movie" data-url="{safe_url}">
             <h3>{item['name']}</h3>
             <div class="btn-grid">
                 <button class="btn-direct" onclick="triggerDirectDownload('{safe_url}', '{safe_title_js}', '{ep_name_js}', {is_tv_js})">📥 Download to Phone</button>
-                <a href="{safe_url}" target="_blank">🌐 Open in Mega App</a>
-                <a href="vlc://{safe_url}" class="btn-vlc">🟠 Play in VLC</a>
+                <a href="{safe_url}" target="_blank" class="btn-mega">📺 Stream in MEGA App</a>
+                <button class="btn-stream" onclick="toggleStream(this,'{safe_url}')">▶ Browser Stream</button>
             </div>
             <div class="progress-container">
                 <p class="progress-text">Waiting to start...</p>
@@ -311,6 +313,29 @@ async function pollStatus() {
             }
         });
     } catch(e) { }
+}
+
+// Logic to embed the Mega Web Player directly in the browser
+function toggleStream(btn, url) {
+    let streamDiv = btn.parentElement.parentElement;
+    let existingIframe = streamDiv.querySelector("iframe");
+    
+    if (existingIframe) {
+        existingIframe.remove();
+        btn.textContent = "▶ Browser Stream";
+        btn.style.background = "#4CAF50";
+    } else {
+        // Convert standard Mega link to Embed link
+        let embedUrl = url.replace("file/", "embed/");
+        let iframe = document.createElement("iframe");
+        iframe.src = embedUrl;
+        iframe.height = "250px";
+        iframe.allowFullscreen = true;
+        streamDiv.appendChild(iframe);
+        
+        btn.textContent = "⏹ Close Stream";
+        btn.style.background = "#9e9e9e"; // Turn button grey when open
+    }
 }
 </script>
 </body>
