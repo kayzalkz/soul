@@ -1,5 +1,6 @@
 import os
 import sys
+import platform  # <--- Added missing import
 import json
 import time
 import shutil
