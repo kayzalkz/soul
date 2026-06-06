@@ -10,6 +10,7 @@ import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import pyfiglet
 from colorama import Fore, Style, init
+import builtins
 
 PORT = 8000
 ACTIVE_DOWNLOADS = {}
@@ -21,22 +22,29 @@ init(autoreset=True)
 RAINBOW_COLORS = [Fore.RED, Fore.YELLOW, Fore.GREEN, Fore.CYAN, Fore.MAGENTA, Fore.BLUE]
 
 def banner():
-    os.system("clear")
+    os.system("clear" if os.name != "nt" else "cls")
     ascii_banner = pyfiglet.figlet_format("SoulKingdom Termux")
     for i, line in enumerate(ascii_banner.splitlines()):
         print(RAINBOW_COLORS[i % len(RAINBOW_COLORS)] + line)
     print(Style.RESET_ALL)
 
 def get_vps_url():
+    """Stores the base URL so we can use multiple API endpoints"""
     config_file = "vps_config.txt"
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
-            return f.read().strip()
+            vps_ip = f.read().strip()
+            # Clean up old saved configs that included /api/scrape
+            if vps_ip.endswith("/api/scrape"):
+                vps_ip = vps_ip.replace("/api/scrape", "")
+            return vps_ip.rstrip("/")
     
-    print(Fore.CYAN + "⚙️ First Time Setup: Enter your VPS API URL" + Style.RESET_ALL)
-    vps_ip = input("Example (http://123.45.67.89:8000): ").strip()
-    if not vps_ip.endswith("/api/scrape"):
-        vps_ip = vps_ip.rstrip("/") + "/api/scrape"
+    print(Fore.CYAN + "⚙️ First Time Setup: Enter your VPS API Base URL" + Style.RESET_ALL)
+    vps_ip = builtins.input("Example (http://123.45.67.89:8000): ").strip()
+    if vps_ip.endswith("/api/scrape"):
+        vps_ip = vps_ip.replace("/api/scrape", "")
+        
+    vps_ip = vps_ip.rstrip("/")
         
     with open(config_file, "w") as f:
         f.write(vps_ip)
@@ -46,8 +54,11 @@ def get_vps_url():
 # Storage Setup (Android)
 # ------------------------
 def get_download_dir():
-    # Saves directly to your Android's main Download folder
+    # Saves directly to your Android's main Download folder so it shows up in file managers
     base_dir = os.path.expanduser("~/storage/shared/Download/SoulKingdom")
+    if platform.system() == "Windows": # Fallback for testing on PC
+        base_dir = os.path.join(os.getcwd(), "Downloads")
+        
     try:
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
@@ -100,7 +111,8 @@ def background_mega_download(url, title, ep_name, is_tv):
     try:
         print(Fore.YELLOW + f"\n[MEGATOOLS] 📥 Downloading to your phone: {category_folder}/{folder_name}" + Style.RESET_ALL)
         
-        process = subprocess.run(['megadl', '--path', temp_dir, url], capture_output=True, text=True)
+        executable = "megadl.exe" if platform.system() == "Windows" else "megadl"
+        process = subprocess.run([executable, '--path', temp_dir, url], capture_output=True, text=True)
         
         if process.returncode != 0:
             raise Exception(f"megadl failed: {process.stderr}")
@@ -178,10 +190,32 @@ class LocalAppHandler(SimpleHTTPRequestHandler):
             super().do_GET() 
 
 # ------------------------
-# Fetch from VPS API
+# VPS API Wrappers
 # ------------------------
-def fetch_from_vps(vps_url, target_url, episodes):
-    print(Fore.CYAN + f"\n⏳ Sending request to VPS: {vps_url}" + Style.RESET_ALL)
+def search_vps_catalog(vps_base_url, query):
+    """Sends a search request to the VPS database"""
+    if not vps_base_url.startswith("http"):
+        vps_base_url = "http://" + vps_base_url
+        
+    search_url = f"{vps_base_url}/api/search"
+    print(Fore.CYAN + f"\n🔍 Searching VPS database..." + Style.RESET_ALL)
+    try:
+        response = requests.post(search_url, json={"query": query}, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("success"):
+            return data.get("results", [])
+        return []
+    except Exception as e:
+        print(Fore.RED + f"❌ Failed to reach VPS search API: {e}" + Style.RESET_ALL)
+        return []
+
+def fetch_from_vps(vps_base_url, target_url, episodes):
+    if not vps_base_url.startswith("http"):
+        vps_base_url = "http://" + vps_base_url
+        
+    scrape_url = f"{vps_base_url}/api/scrape"
+    print(Fore.CYAN + f"\n⏳ Sending request to VPS: {scrape_url}" + Style.RESET_ALL)
     print(Fore.CYAN + "Please wait while your VPS scrapes the site..." + Style.RESET_ALL)
     
     payload = {
@@ -190,7 +224,7 @@ def fetch_from_vps(vps_url, target_url, episodes):
     }
     
     try:
-        response = requests.post(vps_url, json=payload, timeout=120)
+        response = requests.post(scrape_url, json=payload, timeout=120)
         response.raise_for_status()
         data = response.json()
         
@@ -204,7 +238,7 @@ def fetch_from_vps(vps_url, target_url, episodes):
         return None, None, [], False
 
 # ------------------------
-# HTML Generator (Mobile Optimized with Web Stream)
+# HTML Generator
 # ------------------------
 def generate_html(title, poster, links, filepath, is_tv):
     print(Fore.CYAN + f"💾 Generating Mobile UI..." + Style.RESET_ALL)
@@ -213,30 +247,31 @@ def generate_html(title, poster, links, filepath, is_tv):
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title} - Downloads</title>
 <style>
-body {{ font-family: -apple-system, Roboto, Arial, sans-serif; background: #f4f6f9; padding: 15px; margin: 0; }}
-.header {{ text-align: center; margin-bottom: 20px; }}
-.header img {{ max-width: 150px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
-.movie {{ background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }}
-h3 {{ margin-top: 0; color: #0066cc; font-size: 16px; }}
-.btn-grid {{ display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }}
-.btn-grid a, .btn-grid button {{ display: block; text-align: center; padding: 12px; background: #e91e63; color: #fff; border-radius: 8px; text-decoration: none; border: none; font-size: 15px; font-weight: bold; width: 100%; box-sizing: border-box; }}
-.btn-mega {{ background: #D9251A !important; }}
+body {{ font-family: Arial; background: #f4f6f9; padding: 20px; max-width: 1000px; margin: auto; }}
+.header {{ text-align: center; margin-bottom: 30px; }}
+.header img {{ max-width: 200px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
+.movie {{ display: flex; gap: 15px; background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); flex-wrap: wrap; align-items: center; }}
+.info {{ flex: 1; width: 100%; }}
+.info h3 {{ margin-top: 0; color: #0066cc; font-size: 18px; }}
+.info a, .info button {{ display: inline-block; margin: 5px 5px 0 0; padding: 8px 15px; background: #e91e63; color: #fff; border-radius: 5px; text-decoration: none; border: none; cursor: pointer; font-size: 14px; font-weight: bold; }}
+.info a:hover, .info button:hover {{ background: #c2185b; }}
+.btn-vlc {{ background: #ff8800 !important; }}
 .btn-stream {{ background: #4CAF50 !important; }}
 .btn-direct {{ background: #1E88E5 !important; }}
+video, iframe {{ width: 100%; max-width: 600px; border-radius: 8px; margin-top: 10px; }}
 
-.progress-container {{ display:none; background: #e3f2fd; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #1E88E5; }}
+.progress-container {{ display:none; background: #e3f2fd; padding: 10px; border-radius: 5px; margin-top: 10px; border-left: 4px solid #1E88E5; }}
 .progress-text {{ font-size: 13px; color: #333; font-weight: bold; margin:0; word-break: break-all; }}
-video, iframe {{ width: 100%; max-width: 100%; border-radius: 8px; margin-top: 15px; border: none; }}
 </style>
 </head>
 <body>
 
 <div class="header">
     {f'<img src="{poster}" alt="Poster">' if poster else ''}
-    <h2>🎬 {title}</h2>
+    <h1>🎬 {title}</h1>
 </div>
 <div id="movies">
 """
@@ -248,17 +283,18 @@ video, iframe {{ width: 100%; max-width: 100%; border-radius: 8px; margin-top: 1
         safe_url = item["url"].replace(" ", "%20")
         ep_name_js = item['name'].replace("'", "\\'")
         
-        # Cleaned up mobile buttons: Download, Mega App, and Web Stream
         html_content += f"""
         <div class="movie" data-url="{safe_url}">
-            <h3>{item['name']}</h3>
-            <div class="btn-grid">
+            <div class="info">
+                <h3>{item['name']}</h3>
                 <button class="btn-direct" onclick="triggerDirectDownload('{safe_url}', '{safe_title_js}', '{ep_name_js}', {is_tv_js})">📥 Download to Phone</button>
-                <a href="{safe_url}" target="_blank" class="btn-mega">📺 Stream in MEGA App</a>
-                <button class="btn-stream" onclick="toggleStream(this,'{safe_url}')">▶ Browser Stream</button>
-            </div>
-            <div class="progress-container">
-                <p class="progress-text">Waiting to start...</p>
+                <a href="{safe_url}" target="_blank">⬇ Open Mega</a>
+                <a href="vlc://{safe_url}" class="btn-vlc">🟠 VLC Play</a>
+                <button class="btn-stream" onclick="toggleStream(this,'{safe_url}')">▶ Web Stream</button>
+                
+                <div class="progress-container">
+                    <p class="progress-text">Waiting to start...</p>
+                </div>
             </div>
         </div>"""
 
@@ -285,7 +321,7 @@ async function triggerDirectDownload(url, title, ep_name, is_tv) {
             container.style.display = 'none';
         }
     } catch(e) {
-        alert("Error communicating with Termux background app.");
+        alert("Error communicating with Termux app.");
         container.style.display = 'none';
     }
 }
@@ -315,26 +351,25 @@ async function pollStatus() {
     } catch(e) { }
 }
 
-// Logic to embed the Mega Web Player directly in the browser
 function toggleStream(btn, url) {
-    let streamDiv = btn.parentElement.parentElement;
+    let streamDiv = btn.parentElement;
     let existingIframe = streamDiv.querySelector("iframe");
     
     if (existingIframe) {
         existingIframe.remove();
-        btn.textContent = "▶ Browser Stream";
-        btn.style.background = "#4CAF50";
+        btn.textContent = "▶ Web Stream";
     } else {
-        // Convert standard Mega link to Embed link
         let embedUrl = url.replace("file/", "embed/");
         let iframe = document.createElement("iframe");
         iframe.src = embedUrl;
-        iframe.height = "250px";
+        iframe.width = "100%";
+        iframe.height = "400px";
+        iframe.frameBorder = "0";
         iframe.allowFullscreen = true;
+        iframe.style.marginTop = "15px";
+        iframe.style.borderRadius = "8px";
         streamDiv.appendChild(iframe);
-        
-        btn.textContent = "⏹ Close Stream";
-        btn.style.background = "#9e9e9e"; // Turn button grey when open
+        btn.textContent = "⏹ Stop Stream";
     }
 }
 </script>
@@ -351,6 +386,26 @@ def start_server_daemon():
     server = ThreadingHTTPServer(("", PORT), LocalAppHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
+def open_browser(url_path):
+    url = f"http://localhost:{PORT}/{url_path}"
+    system_name = platform.system().lower()
+    try:
+        if "linux" in system_name:
+            if shutil.which("termux-open"):
+                subprocess.Popen(["termux-open", url])
+            elif os.path.exists("/system/bin/am"):
+                subprocess.Popen(["am", "start", "-a", "android.intent.action.VIEW", "-d", url])
+            else:
+                subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif "windows" in system_name:
+            os.startfile(url)
+        elif "darwin" in system_name: 
+            subprocess.Popen(["open", url])
+        else:
+            webbrowser.open(url)
+    except Exception:
+        print(f"Please open manually: {url}")
+
 def main():
     banner()
     vps_url = get_vps_url()
@@ -362,27 +417,59 @@ def main():
     os.chdir(base_dir)
     
     while True:
-        print("\n" + "="*50)
-        target_url = input(Fore.YELLOW + "🔗 Enter Movie/TV URL (or 'q' to quit): " + Style.RESET_ALL).strip()
+        print("\n" + "="*60)
+        target_input = builtins.input(Fore.YELLOW + "🔗 Enter Movie/TV URL, ID, Name, or MM_Name (or 'q' to quit): " + Style.RESET_ALL).strip()
         
-        if target_url.lower() in ['q', 'quit', 'exit']:
+        if target_input.lower() in ['q', 'quit', 'exit']:
             sys.exit(0)
-            
-        if not target_url.startswith("http"):
-            print(Fore.RED + "Invalid URL." + Style.RESET_ALL)
-            continue
 
+        # 1. PROCESS DATABASE SEARCH IF NOT A URL
+        if not target_input.startswith("http"):
+            results = search_vps_catalog(vps_url, target_input)
+            
+            if not results:
+                print(Fore.RED + "❌ No matches found in the VPS database." + Style.RESET_ALL)
+                continue
+            elif len(results) == 1:
+                selected_item = results[0]
+            else:
+                print(Fore.CYAN + f"\n🔍 Found {len(results)} matches. Please select one:" + Style.RESET_ALL)
+                for i, res in enumerate(results):
+                    name = res.get('name', 'Unknown')
+                    mm = f" ({res.get('mm_name')})" if res.get('mm_name') else ""
+                    print(f"  {i+1}. {name}{mm} [ID: {res.get('id')}]")
+                    
+                sel_idx = builtins.input(Fore.YELLOW + "\nEnter the number of your choice (or 'c' to cancel): " + Style.RESET_ALL).strip()
+                if sel_idx.isdigit() and 1 <= int(sel_idx) <= len(results):
+                    selected_item = results[int(sel_idx) - 1]
+                else:
+                    print("Selection cancelled.")
+                    continue
+            
+            # Construct the final SoulKingdom URL from the selected ID
+            s_type = selected_item.get("show_type", "movie").lower()
+            route = "tv_show" if "tv" in s_type or "series" in s_type else "movie"
+            target_url = f"https://www.soulkingdom.net/{route}/{selected_item['id']}"
+            
+            print(Fore.GREEN + f"✅ Selected: {selected_item.get('name')}")
+            print(Fore.GREEN + f"🔗 Generated URL: {target_url}" + Style.RESET_ALL)
+        else:
+            target_url = target_input
+
+        # 2. ASK FOR EPISODES IF TV SHOW
         episodes = "all"
         if "tv_show" in target_url:
-            episodes = input(Fore.YELLOW + "📺 TV Show Detected! Enter episodes to fetch (e.g., '1-8', '2', or 'all'): " + Style.RESET_ALL).strip()
+            episodes = builtins.input(Fore.YELLOW + "📺 TV Show Detected! Enter episodes to fetch (e.g., '1-8', '2', or 'all'): " + Style.RESET_ALL).strip()
             if not episodes:
                 episodes = "all"
 
+        # 3. SCRAPE VIA VPS
         title, poster, new_links, is_tv = fetch_from_vps(vps_url, target_url, episodes)
         
         if not new_links:
             continue
 
+        # 4. STRUCTURE DIRECTORIES
         safe_title = sanitize_filename(title)
         folder_name = safe_title.replace(" ", "_")
         category_folder = "TV_Shows" if is_tv else "Movies"
@@ -394,7 +481,7 @@ def main():
         html_filename = f"{folder_name}.html"
         html_filepath = os.path.join(target_dir, html_filename)
 
-        # Merge JSON Data
+        # 5. MERGE JSON DATA
         if os.path.exists(json_filepath):
             with open(json_filepath, 'r', encoding='utf-8') as f:
                 try:
@@ -414,15 +501,13 @@ def main():
         with open(json_filepath, 'w', encoding='utf-8') as f:
             json.dump({"title": title, "poster": poster, "is_tv": is_tv, "links": merged_links}, f)
 
-        # Generate HTML and Open in Android Browser
+        # 6. GENERATE HTML & OPEN
         generate_html(title, poster, merged_links, html_filepath, is_tv)
         
-        url_path = f"http://localhost:{PORT}/{category_folder}/{folder_name}/{html_filename}"
-        
+        url_path = f"{category_folder}/{folder_name}/{html_filename}"
         print(Fore.GREEN + f"\n✅ Ready! Opening your browser..." + Style.RESET_ALL)
         
-        # This opens the default Android browser (Chrome/Brave) from Termux
-        subprocess.Popen(["termux-open", url_path])
+        open_browser(url_path)
 
 if __name__ == "__main__":
     main()
