@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import os
 import builtins
 import threading
 from bs4 import BeautifulSoup
@@ -8,6 +9,24 @@ from playwright.async_api import async_playwright
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8000
+
+# ------------------------
+# Catalog Database
+# ------------------------
+CATALOG_FILE = "soulkingdom_full_dynamic_catalog.json"
+CATALOG_DATA = []
+
+def load_catalog():
+    global CATALOG_DATA
+    if os.path.exists(CATALOG_FILE):
+        try:
+            with open(CATALOG_FILE, 'r', encoding='utf-8') as f:
+                CATALOG_DATA = json.load(f)
+            print(f"✅ Loaded {len(CATALOG_DATA)} items into search database.")
+        except Exception as e:
+            print(f"⚠️ Failed to load catalog database: {e}")
+    else:
+        print(f"⚠️ '{CATALOG_FILE}' not found. Search API will return empty results.")
 
 def parse_episodes(ep_input):
     """Parses user input like '1-8, 10' into a set of requested numbers"""
@@ -119,12 +138,46 @@ class APIHandler(SimpleHTTPRequestHandler):
         pass # Silence terminal logs
         
     def do_POST(self):
-        if self.path == '/api/scrape':
+        # ------------------------
+        # Endpoint 1: SEARCH
+        # ------------------------
+        if self.path == '/api/search':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
-            
             try:
-                # 1. Read JSON from Android app
+                req = json.loads(post_data.decode('utf-8'))
+                query = str(req.get('query', '')).lower().strip()
+                
+                results = []
+                if CATALOG_DATA:
+                    for item in CATALOG_DATA:
+                        # Direct ID match
+                        if str(item.get("id")) == query:
+                            results = [item]
+                            break
+                        # Name match
+                        name = str(item.get("name", "")).lower()
+                        mm_name = str(item.get("mm_name", "")).lower()
+                        if query in name or query in mm_name:
+                            results.append(item)
+                
+                # Return top 15 matches to Android
+                response = {"success": True, "results": results[:15]}
+            except Exception as e:
+                response = {"success": False, "error": str(e)}
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+
+        # ------------------------
+        # Endpoint 2: SCRAPE
+        # ------------------------
+        elif self.path == '/api/scrape':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            try:
                 req = json.loads(post_data.decode('utf-8'))
                 url = req.get('url')
                 episodes = req.get('episodes', 'all')
@@ -132,10 +185,8 @@ class APIHandler(SimpleHTTPRequestHandler):
                 if not url:
                     raise ValueError("URL is required")
 
-                # 2. Run Playwright Scraper
                 title, poster, links, is_tv = asyncio.run(scrape_api(url, episodes))
 
-                # 3. Format Response
                 response = {
                     "success": True,
                     "title": title,
@@ -146,7 +197,6 @@ class APIHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 response = {"success": False, "error": str(e)}
 
-            # 4. Send JSON back to Android app
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
@@ -155,6 +205,7 @@ class APIHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
 if __name__ == "__main__":
+    load_catalog()
     server = ThreadingHTTPServer(("", PORT), APIHandler)
     print(f"🚀 VPS Headless API Server running on port {PORT}...")
     server.serve_forever()
